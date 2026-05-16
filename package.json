@@ -1,6 +1,6 @@
 {
   "name": "portfolio-tracker-google-app",
-  "version": "36.3.0",
+  "version": "36.4.0",
   "private": true,
   "description": "Master Portfolio Tracker — Google Apps Script",
   "scripts": {

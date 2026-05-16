@@ -4,7 +4,7 @@
  * Currency: parsed from FT HTML; USD/EUR/etc. via Frankfurter; Config column G is fallback only.
  */
 
-const SCRIPT_VERSION = "v36.3";
+const SCRIPT_VERSION = "v36.4";
 const FX_CACHE_KEY = "CachedForeignToGbpFactorsJSON";
 const FT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const LG_BYPASS_MAP = {
@@ -186,21 +186,66 @@ function scrapeLGFundCentre(target) {
 }
 
 function scrapeFT(ticker, configCurrencyFallback) {
+  const tried = [];
+  const tickersToTry = [ticker.trim()].concat(ftTickerRetryVariants(ticker));
+  let lastFailure = "";
+
+  for (let i = 0; i < tickersToTry.length; i++) {
+    const sym = tickersToTry[i];
+    if (tried.indexOf(sym) >= 0) continue;
+    tried.push(sym);
+
+    let result = scrapeFTFundsTearsheet(sym, configCurrencyFallback);
+    if (result.price > 0) {
+      if (i > 0) result.source += " [auto-retry " + sym + "]";
+      return result;
+    }
+    lastFailure = result.source;
+
+    if (isSglNFamily(sym)) {
+      result = scrapeFTEtfTearsheet("SGLN:LSE:GBX", configCurrencyFallback);
+      if (result.price > 0) {
+        result.source += " [ETF tearsheet auto-retry]";
+        return result;
+      }
+      lastFailure = result.source;
+    }
+  }
+
+  return { price: 0, source: lastFailure };
+}
+
+/** FT funds page — primary path (iOS parity). */
+function scrapeFTFundsTearsheet(ticker, configCurrencyFallback) {
   const url = fundsTearsheetURL(ticker);
-  if (!url) return { price: 0, source: "FT Markets (invalid ticker)" };
+  if (!url) return { price: 0, source: "FT funds (invalid ticker)" };
+  return scrapeFTFromUrl(url, ticker, configCurrencyFallback, "FT funds");
+}
+
+/** FT ETF page — fallback for SGLN when funds tearsheet has no price block. */
+function scrapeFTEtfTearsheet(ticker, configCurrencyFallback) {
+  const url = etfTearsheetURL(ticker);
+  if (!url) return { price: 0, source: "FT ETF (invalid ticker)" };
+  return scrapeFTFromUrl(url, ticker, configCurrencyFallback, "FT ETF");
+}
+
+function scrapeFTFromUrl(url, tickerLabel, configCurrencyFallback, label) {
   const fetch = fetchHtml(url);
-  if (!fetch.ok) return { price: 0, source: "FT Markets (" + fetch.error + ")" };
+  if (!fetch.ok) return { price: 0, source: label + " (" + fetch.error + ") | " + url };
   const parsed = extractFTPricePayload(fetch.text);
-  if (!parsed) return { price: 0, source: "FT Markets (parse failed)" };
+  if (!parsed) {
+    const detail = diagnoseFtParseFailure(fetch.text, url, tickerLabel);
+    return { price: 0, source: label + " (parse failed: " + detail + ")" };
+  }
   const quoteCurrency = parsed.currency || configCurrencyFallback || "GBP";
   const gbp = normalizeToGbp(parsed.rawPrice, quoteCurrency);
   if (gbp <= 0 || isNaN(gbp)) {
     const err = (quoteCurrency !== "GBP" && quoteCurrency !== "GBX")
       ? quoteCurrency + "→GBP rate unavailable"
       : "normalize failed";
-    return { price: 0, source: "FT Markets (" + err + ")" };
+    return { price: 0, source: label + " (" + err + " | parsed " + parsed.displayAmount + " " + quoteCurrency + ")" };
   }
-  let source = "FT Markets";
+  let source = label;
   if (quoteCurrency === "GBX") source += " (from " + parsed.displayAmount + " GBX)";
   else if (quoteCurrency !== "GBP") source += " (from " + parsed.displayAmount + " " + quoteCurrency + ")";
   return { price: gbp, source: source };
@@ -210,6 +255,39 @@ function fundsTearsheetURL(ticker) {
   const t = ticker.trim();
   if (!t) return null;
   return "https://markets.ft.com/data/funds/tearsheet/summary?s=" + encodeURIComponent(t);
+}
+
+function etfTearsheetURL(ticker) {
+  const t = ticker.trim();
+  if (!t) return null;
+  return "https://markets.ft.com/data/etfs/tearsheet/summary?s=" + encodeURIComponent(t);
+}
+
+function isSglNFamily(ticker) {
+  const u = ticker.toUpperCase().trim();
+  return u === "SGLN" || u.indexOf("SGLN") === 0;
+}
+
+/** Alternate FT symbols when Config ID does not match a price block (e.g. SGLN:LSE:GB). */
+function ftTickerRetryVariants(ticker) {
+  if (!isSglNFamily(ticker)) return [];
+  return ["SGLN.L", "SGLN:LSE:GBX"];
+}
+
+function diagnoseFtParseFailure(html, url, ticker) {
+  const parts = [];
+  parts.push("ticker=" + ticker);
+  parts.push("htmlChars=" + html.length);
+  const spanCount = (html.match(/mod-ui-data-list__value/g) || []).length;
+  parts.push("priceSpans=" + spanCount);
+  if (html.indexOf("No results found") >= 0) parts.push("page=No results found");
+  const curr = html.match(/Price\s*\(([A-Za-z]{3})\)/i);
+  parts.push(curr ? "label=Price (" + curr[1] + ")" : "label=Price (missing)");
+  if (spanCount === 0 && isSglNFamily(ticker)) {
+    parts.push("fix: set Config ID to SGLN.L or SGLN:LSE:GBX — SGLN:LSE:GB has no FT price");
+  }
+  parts.push("url=" + url);
+  return parts.join("; ");
 }
 
 function fetchHtml(url) {
