@@ -21,9 +21,7 @@ jobs:
       - name: Configure clasp credentials
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
-        run: |
-          mkdir -p ~/.clasprc.json.d 2>/dev/null || true
-          echo "$CLASPRC_JSON" > ~/.clasprc.json
+        run: echo "$CLASPRC_JSON" > ~/.clasprc.json
 
       - name: Configure script ID
         env:

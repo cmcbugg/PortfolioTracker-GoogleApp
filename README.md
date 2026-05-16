@@ -1,85 +1,71 @@
-# Portfolio Tracker (Google Apps Script)
+# Portfolio Tracker
 
-Master Portfolio Tracker v36.0 — deployed from this repo to Google Apps Script via [clasp](https://github.com/google/clasp) and GitHub Actions.
+Edit the script in Cursor, push to GitHub, and it deploys to Google Apps Script automatically.
 
-## Repository layout
+## Day-to-day workflow
 
-| Path | Purpose |
-|------|---------|
-| `src/Code.gs` | Main script (source of truth) |
-| `src/appsscript.json` | Apps Script manifest (must live next to code when using `rootDir: src`) |
-| `.clasp.json` | Links this repo to your script (local only, not committed) |
-| `scripts/run-function.js` | Run a function remotely and show logs |
+1. Edit **`src/Code.gs`** in Cursor.
+2. Commit and push to GitHub:
+   ```bash
+   git add src/Code.gs
+   git commit -m "Describe your change"
+   git push
+   ```
+3. GitHub deploys to Apps Script (about 1 minute). Check **Actions** on GitHub for a green ✓.
+4. Run the script in Google as usual: open your sheet → **Extensions → Apps Script** → select `runDailyPortfolioUpdate` → **Run**.
 
-## One-time setup
+That’s it. No GCP or OAuth setup required for this workflow.
 
-### 1. Enable the Apps Script API
+## One-time setup (do once)
 
-Open [script.google.com/home/usersettings](https://script.google.com/home/usersettings) and turn on **Google Apps Script API**.
+### 1. Enable Apps Script API
 
-### 2. Link to your existing script
+[script.google.com/home/usersettings](https://script.google.com/home/usersettings) → turn on **Google Apps Script API**.
 
-In the Google Sheet: **Extensions → Apps Script**. Copy the **Script ID** from **Project settings**.
+### 2. Log in with clasp (on your Mac)
 
 ```bash
-cd /path/to/PortfolioTracker-GoogleApp
+cd /Users/chris/Desktop/PortfolioTracker-GoogleApp
 npm install
+npm run login
+```
+
+A browser window opens; sign in with the same Google account that owns the spreadsheet.
+
+### 3. Add GitHub secrets
+
+Repo: [github.com/cmcbugg/PortfolioTracker-GoogleApp](https://github.com/cmcbugg/PortfolioTracker-GoogleApp) → **Settings → Secrets and variables → Actions → New repository secret**
+
+| Secret name | Value |
+|-------------|--------|
+| `APPS_SCRIPT_ID` | Apps Script → **Project settings** → **Script ID** (the long `1Gelf_...` string) |
+| `CLASPRC_JSON` | Run `cat ~/.clasprc.json` and paste the **entire** output |
+
+### 4. Push once to test
+
+```bash
+git push
+```
+
+Open the **Actions** tab on GitHub. If **Deploy to Google Apps Script** is green, your script is live in Google.
+
+## Optional: push from your Mac without GitHub
+
+Only if you want to deploy without committing:
+
+```bash
 cp .clasp.json.example .clasp.json
-# Edit .clasp.json — set "scriptId" only (do not put Script ID in "projectId")
-npm run login    # opens browser for Google OAuth
-npm run push     # upload src/Code.gs to Apps Script
+# Edit .clasp.json — set your Script ID
+npm run push
 ```
 
-**Script ID vs GCP project ID**
+## Files
 
-| Field | Where to find it | Example shape |
-|-------|-------------------|---------------|
-| `scriptId` in `.clasp.json` | Apps Script → **Project settings** → Script ID | Long string `1Gelf_...` |
-| `projectId` (logs only) | Apps Script → **Project settings** → Google Cloud Platform → **Project ID** | Short name like `script-123456-abc` |
+| File | Purpose |
+|------|---------|
+| `src/Code.gs` | Your script (edit this) |
+| `src/appsscript.json` | Apps Script settings (rarely changed) |
 
-If `clasp logs --setup` asks for a project ID, use the **GCP Project ID**, not the Script ID.
+## Run the script in Google
 
-### 3. GitHub secrets (for CI deploy & remote runs)
-
-In the GitHub repo: **Settings → Secrets and variables → Actions**, add:
-
-| Secret | Value |
-|--------|--------|
-| `APPS_SCRIPT_ID` | Your Apps Script project ID |
-| `CLASPRC_JSON` | Full contents of `~/.clasprc.json` after `npm run login` |
-
-To copy your clasp credentials:
-
-```bash
-cat ~/.clasprc.json
-```
-
-Paste the entire JSON into the `CLASPRC_JSON` secret.
-
-After secrets are set, every push to `main` runs **Deploy to Google Apps Script**. Use **Actions → Run Apps Script function** to execute tests in the cloud.
-
-## Local development
-
-```bash
-npm install
-npm run push          # deploy local changes
-npm run run:test      # run testGetPriceSample (safe, no email)
-npm run run:dry       # dryRunPortfolioUpdate (reads Config, no writes/email)
-npm run logs          # tail Stackdriver logs
-npm run open          # open script in browser
-```
-
-### Test functions
-
-- **`testGetPriceSample`** — Fetches a sample price (SGLN). No spreadsheet changes.
-- **`dryRunPortfolioUpdate`** — Reads your Config sheet, fetches all prices, logs totals. No dashboard/history updates, no email.
-- **`runDailyPortfolioUpdate`** — Full production run (writes sheets, sends email). Use only when intended.
-
-## CI workflows
-
-- **Deploy to Google Apps Script** — Runs on push to `main`; runs `clasp push`.
-- **Run Apps Script function** — Manual workflow; choose function and view logs in the Actions run.
-
-## Migrating from `portfolio-tracker.v36.0`
-
-The original export file is kept for reference. **`src/Code.gs`** is what gets deployed.
+This repo only **uploads** code. To execute it, use the Apps Script editor or your existing spreadsheet trigger — same as before.
