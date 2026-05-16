@@ -1,13 +1,16 @@
 /**
- * Master Portfolio Tracker v36.0
- * Status: DATA-DRIVEN STABILITY
- * Changes: 
- * 1. Uses the "Currency" column from Config to handle GBP/GBX logic.
- * 2. Removed all arbitrary price thresholds.
- * 3. Kept the 3x Retry logic for Google Finance.
+ * Master Portfolio Tracker
+ * Price lookup: L&G bypass (mapped ISINs) then FT funds tearsheet (iOS parity).
+ * Currency: parsed from FT HTML; USD/EUR/etc. via Frankfurter; Config column G is fallback only.
  */
 
-const SCRIPT_VERSION = "v36.1";
+const SCRIPT_VERSION = "v36.2";
+const FX_CACHE_KEY = "CachedForeignToGbpFactorsJSON";
+const FT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const LG_BYPASS_MAP = {
+  "GB00BJXRFN84": { url: "https://fundcentres.landg.com/en/uk/workplace-adviser/fund-centre/Global-Developed-Equity-Index-Fund/", code: "BC03" },
+  "GB00BJXRFM77": { url: "https://fundcentres.landg.com/en/uk/workplace-adviser/fund-centre/World-Emerging-Markets-Equity-Index-Fund/", code: "BD03" }
+};
 
 function runDailyPortfolioUpdate() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -43,7 +46,7 @@ function runDailyPortfolioUpdate() {
     let id = row[3] ? row[3].toString().trim() : "";
     let type = row[4] ? row[4].toString().trim() : "";
     let units = parseFloat(row[5]) || 0;
-    let currency = row[6] ? row[6].toString().trim().toUpperCase() : "GBP"; // Column G
+    let currency = row[6] ? row[6].toString().trim().toUpperCase() : "GBP"; // Column G (fallback if FT omits currency)
 
     if (units === 0 && type.toUpperCase() !== "MANUAL") return;
 
@@ -120,72 +123,140 @@ function runDailyPortfolioUpdate() {
 }
 
 function getPriceWithSource(id, type, currency, name) {
-  let result = { price: 0, source: "None" };
-  const upperID = id.toUpperCase().trim();
-
   try {
-    // 1. L&G Portal Bypass (Still needs to be handled because these are always GBX)
-    const lgBypassMap = {
-      "GB00BJXRFN84": { url: "https://fundcentres.landg.com/en/uk/workplace-adviser/fund-centre/Global-Developed-Equity-Index-Fund/", code: "BC03" },
-      "GB00BJXRFM77": { url: "https://fundcentres.landg.com/en/uk/workplace-adviser/fund-centre/World-Emerging-Markets-Equity-Index-Fund/", code: "BD03" }
-    };
-    if (lgBypassMap[upperID]) {
-      const target = lgBypassMap[upperID];
-      const html = UrlFetchApp.fetch(target.url, {muteHttpExceptions: true}).getContentText();
-      const pattern = new RegExp(target.code + "[\\s\\S]*?([\\d\\.,]+)p", "i");
-      const match = html.match(pattern);
-      if (match) {
-        result.price = parseFloat(match[1].replace(/,/g, '')) / 100;
-        result.source = `L&G Portal (${target.code})`;
-        return result;
-      }
-    }
+    return scrapeLGBypassOrFT(id, currency);
+  } catch (e) {
+    return { price: 0, source: "Error: " + e.toString() };
+  }
+}
 
-    // 2. SGLN Gold Bypass
-    if (upperID === "SGLN") {
-      const url = "https://markets.ft.com/data/etfs/tearsheet/summary?s=SGLN:LSE:GBX";
-      const html = UrlFetchApp.fetch(url, {muteHttpExceptions: true}).getContentText();
-      const match = html.match(/Price \(GBX\)<\/th><td[^>]*>([\d\.,]+)/i) || html.match(/<span class="mod-ui-data-list__value">([\d\.,]+)<\/span>/);
-      if (match) { 
-        result.price = parseFloat(match[1].replace(/,/g, '')) / 100; 
-        result.source = "FT Gold Bypass"; 
-        return result; 
-      }
-    }
+/** L&G mapped ISINs first; if bypass fails, fall through to FT (iOS parity). */
+function scrapeLGBypassOrFT(ticker, configCurrencyFallback) {
+  const key = ticker.toUpperCase().trim();
+  if (LG_BYPASS_MAP[key]) {
+    const lg = scrapeLGFundCentre(LG_BYPASS_MAP[key]);
+    if (lg.price > 0) return lg;
+  }
+  return scrapeFT(ticker, configCurrencyFallback);
+}
 
-    // 3. Google Finance (3x Retry)
-    if (type.toUpperCase() === "ETF") {
-      const url = `https://www.google.com/finance/quote/${id}:LON`;
-      for (let i = 0; i < 3; i++) {
-        const html = UrlFetchApp.fetch(url, {muteHttpExceptions: true}).getContentText();
-        const match = html.match(/data-last-price="([\d\.]+)"/) || html.match(/class="YMlKec fxKb9e">[^0-9]*([\d\.,]+)/);
-        if (match) { 
-          let p = parseFloat(match[1].replace(/,/g, '')); 
-          // If Config says GBX, divide by 100.
-          result.price = (currency === "GBX") ? p / 100 : p;
-          result.source = "Google Finance (LON)"; 
-          return result; 
-        }
-        if (i < 2) Utilities.sleep(2000); 
-      }
-    }
+function scrapeLGFundCentre(target) {
+  const fetch = fetchHtml(target.url);
+  if (!fetch.ok) return { price: 0, source: "L&G Portal (" + fetch.error + ")" };
+  const pattern = new RegExp(target.code + "[\\s\\S]*?([\\d\\.,]+)p", "i");
+  const match = fetch.text.match(pattern);
+  if (!match) return { price: 0, source: "L&G Portal (parse failed)" };
+  const pence = parseFloat(match[1].replace(/,/g, ""));
+  if (isNaN(pence) || pence <= 0) return { price: 0, source: "L&G Portal (invalid price)" };
+  return { price: pence / 100, source: "L&G Fund Centre (" + target.code + ")" };
+}
 
-    // 4. FT Fallback
-    const variants = [`${id}:GBX`, `${id}:GBP`, id];
-    for (let v of variants) {
-      const url = `https://markets.ft.com/data/funds/tearsheet/summary?s=${v}`;
-      const html = UrlFetchApp.fetch(url, {muteHttpExceptions: true}).getContentText();
-      const match = html.match(/<span class="mod-ui-data-list__value">([\d\.,]+)<\/span>/);
-      if (match) { 
-        let p = parseFloat(match[1].replace(/,/g, '')); 
-        // If Config says GBX, divide by 100.
-        result.price = (currency === "GBX") ? p / 100 : p;
-        result.source = `FT Markets (${v})`; 
-        return result; 
-      }
-    }
-  } catch (e) { result.source = "Error: " + e.toString(); }
-  return result;
+function scrapeFT(ticker, configCurrencyFallback) {
+  const url = fundsTearsheetURL(ticker);
+  if (!url) return { price: 0, source: "FT Markets (invalid ticker)" };
+  const fetch = fetchHtml(url);
+  if (!fetch.ok) return { price: 0, source: "FT Markets (" + fetch.error + ")" };
+  const parsed = extractFTPricePayload(fetch.text);
+  if (!parsed) return { price: 0, source: "FT Markets (parse failed)" };
+  const quoteCurrency = parsed.currency || configCurrencyFallback || "GBP";
+  const gbp = normalizeToGbp(parsed.rawPrice, quoteCurrency);
+  if (gbp <= 0 || isNaN(gbp)) {
+    const err = (quoteCurrency !== "GBP" && quoteCurrency !== "GBX")
+      ? quoteCurrency + "→GBP rate unavailable"
+      : "normalize failed";
+    return { price: 0, source: "FT Markets (" + err + ")" };
+  }
+  let source = "FT Markets";
+  if (quoteCurrency === "GBX") source += " (from " + parsed.displayAmount + " GBX)";
+  else if (quoteCurrency !== "GBP") source += " (from " + parsed.displayAmount + " " + quoteCurrency + ")";
+  return { price: gbp, source: source };
+}
+
+function fundsTearsheetURL(ticker) {
+  const t = ticker.trim();
+  if (!t) return null;
+  return "https://markets.ft.com/data/funds/tearsheet/summary?s=" + encodeURIComponent(t);
+}
+
+function fetchHtml(url) {
+  const resp = UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    headers: { "User-Agent": FT_USER_AGENT }
+  });
+  const code = resp.getResponseCode();
+  if (code < 200 || code > 299) return { ok: false, error: "HTTP " + code };
+  const text = resp.getContentText();
+  if (text.indexOf("No results found") >= 0) return { ok: false, error: "Ticker not found" };
+  if (htmlLooksProbablyBlocked(text)) return { ok: false, error: "Response blocked" };
+  if (text.length < 2000) return { ok: false, error: "Short response (" + text.length + " chars)" };
+  return { ok: true, text: text };
+}
+
+function htmlLooksProbablyBlocked(html) {
+  const lc = html.toLowerCase();
+  const markers = [
+    "attention required", "access denied", "forbidden", "requested url was rejected",
+    "error 403", "error 429", "captcha", "verify you are human", "are you human"
+  ];
+  return markers.some(function(m) { return lc.indexOf(m) >= 0; });
+}
+
+/** Matches iOS extractFTPricePayload. */
+function extractFTPricePayload(html) {
+  const priceMatch = html.match(/<span class="mod-ui-data-list__value">([\d\.,]+)<\/span>/);
+  if (!priceMatch) return null;
+  const currMatch = html.match(/Price\s*\(([A-Za-z]{3})\)/i);
+  const currency = currMatch ? currMatch[1].toUpperCase() : "GBP";
+  const rawPrice = parseFloat(priceMatch[1].replace(/,/g, ""));
+  if (isNaN(rawPrice) || rawPrice <= 0) return null;
+  return { rawPrice: rawPrice, currency: currency, displayAmount: priceMatch[1] };
+}
+
+/** GBP per unit: GBP as-is, GBX÷100, foreign × Frankfurter factor (iOS parity). */
+function normalizeToGbp(rawPrice, quoteCurrency) {
+  const c = (quoteCurrency || "GBP").toUpperCase();
+  if (c === "GBP") return rawPrice;
+  if (c === "GBX") return rawPrice / 100;
+  const factor = getForeignToGbpFactor(c);
+  if (!factor || factor <= 0 || !isFinite(factor)) return 0;
+  return rawPrice * factor;
+}
+
+function loadFxCache() {
+  const json = PropertiesService.getScriptProperties().getProperty(FX_CACHE_KEY);
+  if (!json) return {};
+  try {
+    const parsed = JSON.parse(json);
+    return (parsed && typeof parsed === "object") ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveFxCache(cache) {
+  PropertiesService.getScriptProperties().setProperty(FX_CACHE_KEY, JSON.stringify(cache));
+}
+
+/** Frankfurter: rate = foreign units per 1 GBP → factor = 1/rate → gbp = raw × factor */
+function getForeignToGbpFactor(isoCode) {
+  const c = isoCode.toUpperCase();
+  if (c === "GBP" || c === "GBX") return 1;
+  const cache = loadFxCache();
+  if (cache[c] && cache[c] > 0 && isFinite(cache[c])) return cache[c];
+  try {
+    const url = "https://api.frankfurter.dev/v1/latest?base=GBP&symbols=" + encodeURIComponent(c);
+    const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (resp.getResponseCode() < 200 || resp.getResponseCode() > 299) return cache[c] || null;
+    const json = JSON.parse(resp.getContentText());
+    const rates = json.rates || {};
+    const rate = rates[c] || rates[Object.keys(rates).find(function(k) { return k.toUpperCase() === c; })];
+    if (!rate || rate <= 0 || !isFinite(rate)) return cache[c] || null;
+    cache[c] = 1.0 / rate;
+    saveFxCache(cache);
+    return cache[c];
+  } catch (e) {
+    return cache[c] || null;
+  }
 }
 
 // Support functions (updateOrderedSheet and sendPlatformEmail) same as before.
@@ -254,6 +325,6 @@ function sendPlatformEmail(email, platformMap, typeMap, isa, pen, total, moveGBP
   let errorSection = "";
   if (failed.length > 0) errorSection += `<div style="background:#fce8e6; padding:8px; border-radius:5px; margin-top:10px; color:#d93025; font-size:0.85em;"><b>Flagged Zeros:</b> ${failed.join(", ")}</div>`;
   if (stale.length > 0) errorSection += `<div style="background:#fff4e5; padding:8px; border-radius:5px; margin-top:5px; color:#664d03; border: 1px solid #ffecb5; font-size:0.85em;"><b>Stale Prices:</b> ${stale.join(", ")}</div>`;
-  const htmlBody = `<div style="font-family: sans-serif; max-width: 500px; border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f9f9f9;"><div style="background-color: #fff; padding: 10px; margin-bottom: 10px; border-radius: 8px; border: 1px solid #eee; text-align: center;"><div style="font-size: 1.8em; font-weight: bold; color: #333;">£${total.toLocaleString(undefined, {maximumFractionDigits: 0})}</div><div style="font-size: 1em; color: ${moveGBP >= 0 ? '#008000' : '#d93025'}; font-weight: bold;">${dir}: £${Math.abs(moveGBP).toLocaleString(undefined, {maximumFractionDigits: 0})} (${movePct.toFixed(2)}%)</div></div><table style="width: 100%; border-collapse: collapse; background: #fff; border-radius: 5px; font-size: 0.9em;"><thead><tr style="background:#f1f3f4; color:#5f6368; font-size:0.8em;"><th style="padding:5px 8px; text-align:left;">PLATFORM</th><th style="padding:10px; text-align:right;">VALUE</th><th style="padding:10px; text-align:right;">CHANGE</th></tr></thead><tbody>${platformRows}</tbody></table><div style="margin-top: 10px; text-align:center; font-size: 0.85em;"><span style="background:#fff; padding:5px 10px; border-radius:5px; border:1px solid #eee; margin-right:5px;">ISA: <b>£${isa.toLocaleString(undefined, {maximumFractionDigits: 0})}</b></span><span style="background:#fff; padding:5px 10px; border-radius:5px; border:1px solid #eee;">PEN: <b>£${pen.toLocaleString(undefined, {maximumFractionDigits: 0})}</b></span></div>${errorSection}<p style="color: #999; font-size: 0.7em; margin-top: 15px; text-align: center; border-top: 1px solid #eee; padding-top: 10px;">${SCRIPT_VERSION} • Data: FT & Google</p></div>`;
+  const htmlBody = `<div style="font-family: sans-serif; max-width: 500px; border: 1px solid #ddd; padding: 15px; border-radius: 8px; background-color: #f9f9f9;"><div style="background-color: #fff; padding: 10px; margin-bottom: 10px; border-radius: 8px; border: 1px solid #eee; text-align: center;"><div style="font-size: 1.8em; font-weight: bold; color: #333;">£${total.toLocaleString(undefined, {maximumFractionDigits: 0})}</div><div style="font-size: 1em; color: ${moveGBP >= 0 ? '#008000' : '#d93025'}; font-weight: bold;">${dir}: £${Math.abs(moveGBP).toLocaleString(undefined, {maximumFractionDigits: 0})} (${movePct.toFixed(2)}%)</div></div><table style="width: 100%; border-collapse: collapse; background: #fff; border-radius: 5px; font-size: 0.9em;"><thead><tr style="background:#f1f3f4; color:#5f6368; font-size:0.8em;"><th style="padding:5px 8px; text-align:left;">PLATFORM</th><th style="padding:10px; text-align:right;">VALUE</th><th style="padding:10px; text-align:right;">CHANGE</th></tr></thead><tbody>${platformRows}</tbody></table><div style="margin-top: 10px; text-align:center; font-size: 0.85em;"><span style="background:#fff; padding:5px 10px; border-radius:5px; border:1px solid #eee; margin-right:5px;">ISA: <b>£${isa.toLocaleString(undefined, {maximumFractionDigits: 0})}</b></span><span style="background:#fff; padding:5px 10px; border-radius:5px; border:1px solid #eee;">PEN: <b>£${pen.toLocaleString(undefined, {maximumFractionDigits: 0})}</b></span></div>${errorSection}<p style="color: #999; font-size: 0.7em; margin-top: 15px; text-align: center; border-top: 1px solid #eee; padding-top: 10px;">${SCRIPT_VERSION} • Data: FT</p></div>`;
   GmailApp.sendEmail(email, subject, "", { htmlBody: htmlBody, name: "Portfolio Automator" });
 }
