@@ -4,7 +4,7 @@
  * Currency: parsed from FT HTML; USD/EUR/etc. via Frankfurter; Config column G is fallback only.
  */
 
-const SCRIPT_VERSION = "v36.2";
+const SCRIPT_VERSION = "v36.3";
 const FX_CACHE_KEY = "CachedForeignToGbpFactorsJSON";
 const FT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const LG_BYPASS_MAP = {
@@ -53,24 +53,29 @@ function runDailyPortfolioUpdate() {
     let price = 0;
     let source = "";
 
+    let logStatus = "OK";
+    let lookupFailureReason = "";
+
     if (type.toUpperCase() === "MANUAL") {
-      price = units; 
-      units = 1;     
+      price = units;
+      units = 1;
       source = "Manual Entry";
     } else {
-      // Pass the currency to the price fetcher
       let priceResult = getPriceWithSource(id, type, currency, name);
       price = isNaN(priceResult.price) ? 0 : priceResult.price;
       source = priceResult.source;
 
       if (price <= 0) {
+        lookupFailureReason = source || "Unknown lookup error";
         let fallbackRow = oldDashboardData.find(r => r[2] === name);
         if (fallbackRow && fallbackRow[3] > 0) {
           price = fallbackRow[3];
           source = "FALLBACK (Last Known)";
-          staleFunds.push(name); 
+          staleFunds.push(name);
+          logStatus = "STALE";
         } else {
           failedFunds.push(`${name} (${id})`);
+          logStatus = "FAIL";
         }
       }
     }
@@ -88,7 +93,7 @@ function runDailyPortfolioUpdate() {
     }
 
     dashboard.appendRow([platform, account, name, price, value]);
-    console.log(`Row ${index + 2}: [${platform}] ${name} | Price: £${price.toFixed(4)} | Value: £${value.toFixed(2)} | Source: ${source}`);
+    logFundPriceRow(index + 2, platform, name, id, price, value, source, logStatus, lookupFailureReason);
     Utilities.sleep(500); 
   });
 
@@ -119,7 +124,36 @@ function runDailyPortfolioUpdate() {
   }
 
   sendPlatformEmail(myEmail, totalsByPlatform, platformToAccountMap, isaTotal, penTotal, grandTotal, moveGBP, failedFunds, staleFunds, platformDeltas, false);
+  logPriceLookupSummary(failedFunds, staleFunds);
   console.log(`--- UPDATE COMPLETE | GRAND TOTAL: £${grandTotal.toFixed(2)} ---`);
+}
+
+function logFundPriceRow(rowNum, platform, name, id, price, value, source, logStatus, lookupFailureReason) {
+  const base = `Row ${rowNum}: [${platform}] ${name} (${id})`;
+  if (logStatus === "FAIL") {
+    console.warn(`[FAIL] ${base} | LOOKUP FAILED: ${lookupFailureReason} | NO FALLBACK | Value: £0.00`);
+    return;
+  }
+  if (logStatus === "STALE") {
+    console.warn(
+      `[STALE] ${base} | LOOKUP FAILED: ${lookupFailureReason} | Using last known £${price.toFixed(4)} | Value: £${value.toFixed(2)} | Source: ${source}`
+    );
+    return;
+  }
+  console.log(`[OK] ${base} | Price: £${price.toFixed(4)} | Value: £${value.toFixed(2)} | Source: ${source}`);
+}
+
+function logPriceLookupSummary(failedFunds, staleFunds) {
+  console.log("--- PRICE LOOKUP SUMMARY ---");
+  if (staleFunds.length === 0 && failedFunds.length === 0) {
+    console.log("[OK] All funds priced from live lookup or manual entry.");
+  }
+  if (staleFunds.length > 0) {
+    console.warn(`[STALE] ${staleFunds.length} fund(s) used last known price: ${staleFunds.join(", ")}`);
+  }
+  if (failedFunds.length > 0) {
+    console.warn(`[FAIL] ${failedFunds.length} fund(s) could not be priced: ${failedFunds.join(", ")}`);
+  }
 }
 
 function getPriceWithSource(id, type, currency, name) {
