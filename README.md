@@ -7,7 +7,7 @@ Master Portfolio Tracker v36.0 — deployed from this repo to Google Apps Script
 | Path | Purpose |
 |------|---------|
 | `src/Code.gs` | Main script (source of truth) |
-| `appsscript.json` | Apps Script manifest |
+| `src/appsscript.json` | Apps Script manifest (must live next to code when using `rootDir: src`) |
 | `.clasp.json` | Links this repo to your script (local only, not committed) |
 | `scripts/run-function.js` | Run a function remotely and show logs |
 
@@ -19,16 +19,25 @@ Open [script.google.com/home/usersettings](https://script.google.com/home/userse
 
 ### 2. Link to your existing script
 
-In the Google Sheet: **Extensions → Apps Script**. Copy the **Script ID** from **Project settings** (starts with something like `1abc...`).
+In the Google Sheet: **Extensions → Apps Script**. Copy the **Script ID** from **Project settings**.
 
 ```bash
 cd /path/to/PortfolioTracker-GoogleApp
 npm install
 cp .clasp.json.example .clasp.json
-# Edit .clasp.json and paste your script ID
+# Edit .clasp.json — set "scriptId" only (do not put Script ID in "projectId")
 npm run login    # opens browser for Google OAuth
 npm run push     # upload src/Code.gs to Apps Script
 ```
+
+**Script ID vs GCP project ID**
+
+| Field | Where to find it | Example shape |
+|-------|-------------------|---------------|
+| `scriptId` in `.clasp.json` | Apps Script → **Project settings** → Script ID | Long string `1Gelf_...` |
+| `projectId` (logs only) | Apps Script → **Project settings** → Google Cloud Platform → **Project ID** | Short name like `script-123456-abc` |
+
+If `clasp logs --setup` asks for a project ID, use the **GCP Project ID**, not the Script ID.
 
 ### 3. GitHub secrets (for CI deploy & remote runs)
 

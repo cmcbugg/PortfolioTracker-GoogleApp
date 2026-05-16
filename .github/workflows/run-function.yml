@@ -40,7 +40,7 @@ jobs:
         id: run
         run: |
           echo "Running ${{ inputs.function_name }}..."
-          npx clasp run "${{ inputs.function_name }}" --json 2>&1 | tee run-output.txt || true
+          npx clasp run "${{ inputs.function_name }}" 2>&1 | tee run-output.txt || true
 
       - name: Fetch execution logs
         run: |
