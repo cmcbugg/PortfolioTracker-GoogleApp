@@ -1,0 +1,19 @@
+{
+  "name": "portfolio-tracker-google-app",
+  "version": "36.0.0",
+  "private": true,
+  "description": "Master Portfolio Tracker — Google Apps Script",
+  "scripts": {
+    "login": "clasp login",
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "open": "clasp open",
+    "logs": "clasp logs",
+    "run:test": "node scripts/run-function.js testGetPriceSample",
+    "run:dry": "node scripts/run-function.js dryRunPortfolioUpdate",
+    "run": "node scripts/run-function.js"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  }
+}

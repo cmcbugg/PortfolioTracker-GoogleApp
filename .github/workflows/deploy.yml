@@ -1,0 +1,39 @@
+name: Deploy to Google Apps Script
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Configure clasp credentials
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          mkdir -p ~/.clasprc.json.d 2>/dev/null || true
+          echo "$CLASPRC_JSON" > ~/.clasprc.json
+
+      - name: Configure script ID
+        env:
+          APPS_SCRIPT_ID: ${{ secrets.APPS_SCRIPT_ID }}
+        run: |
+          if [ -z "$APPS_SCRIPT_ID" ]; then
+            echo "::error::APPS_SCRIPT_ID secret is not set. See README for setup."
+            exit 1
+          fi
+          echo "{\"scriptId\":\"$APPS_SCRIPT_ID\",\"rootDir\":\"src\"}" > .clasp.json
+
+      - name: Push to Apps Script
+        run: npx clasp push --force
