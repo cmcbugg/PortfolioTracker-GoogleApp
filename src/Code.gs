@@ -7,7 +7,7 @@
  * 3. Kept the 3x Retry logic for Google Finance.
  */
 
-const SCRIPT_VERSION = "v36.0";
+const SCRIPT_VERSION = "v36.1";
 
 function runDailyPortfolioUpdate() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -240,7 +240,7 @@ function sendPlatformEmail(email, platformMap, typeMap, isa, pen, total, moveGBP
     let catB = typeMap[b] || "PEN";
     if (catA === "ISA" && catB !== "ISA") return -1;
     if (catA !== "ISA" && catB === "ISA") return 1;
-    return a.localeCompare(b);
+    return platformMap[b] - platformMap[a];
   });
   let platformRows = "";
   keys.forEach(plat => {
